@@ -312,7 +312,7 @@ def _(df, pd):
     # - ASCII only (no Japanese)
     # =========================================================
     # ---- user knobs ----
-    INPUT_TYPE = "compat"  # set None to include all input_type
+    INPUT_TYPE = "compatduck"  # set None to include all input_type
     SAVE = True
     OUTDIR = "out"
 
@@ -507,7 +507,9 @@ def _(df, pd):
         title=f"Efficiency vs VMAF (by encoder impl) input_type={INPUT_TYPE}",
         left_ylabel="size_ratio (out/src)",
         right_ylabel="VMAF mean",
-        out_png=f"{OUTDIR}/plot_{INPUT_TYPE}_efficiency_vmaf_by_impl.png" if SAVE else None,
+        out_png=(
+            f"{OUTDIR}/plot_{INPUT_TYPE}_efficiency_vmaf_by_impl.png" if SAVE else None
+        ),
     )
 
     # 2) Real time vs CPU total
@@ -527,6 +529,196 @@ def _(df, pd):
         print("saved:")
         print(f"- {OUTDIR}/plot_{INPUT_TYPE}_efficiency_vmaf_by_impl.png")
         print(f"- {OUTDIR}/plot_{INPUT_TYPE}_time_cpu_by_impl.png")
+
+    # -----------------------------
+    # VMAF順カテゴリを作るための補助（衝突回避版）
+    # -----------------------------
+    def vx_add_combo_label_and_metrics(vx_df_in: pd.DataFrame) -> pd.DataFrame:
+        vx_df = vx_df_in.copy()
+
+        # _prep_plot_df() 済みなら speed_label がある想定
+        if "speed_label" in vx_df.columns:
+            vx_is_def = vx_df["speed_label"].astype(str).eq("default")
+        else:
+            vx_is_def = pd.Series(False, index=vx_df.index)
+
+        vx_df["vx_combo_label"] = (
+            vx_df["codec"].astype(str)
+            + "/"
+            + vx_df["preset"].astype("Int64").astype(str)
+            + np.where(vx_is_def.to_numpy(), " (def)", "")
+        )
+
+        # 圧縮速度（時間比）：real_time / src_duration（小さいほど速い）
+        vx_df["vx_enc_time_over_duration"] = (
+            vx_df["real_time_s"] / vx_df["src_duration_s"]
+        )
+
+        # CPU負荷（平均使用コア数）：cpu_total / real_time
+        vx_df["vx_cpu_load_cores_avg"] = vx_df["cpu_total_s"] / vx_df["real_time_s"]
+
+        return vx_df
+
+    def vx_plot_dual_axis_sorted_by_vmaf(
+        vx_df_in: pd.DataFrame,
+        vx_x_label_col: str,
+        vx_y_left_col: str,
+        vx_y_right_col: str,
+        vx_title: str,
+        vx_left_ylabel: str,
+        vx_right_ylabel: str,
+        vx_right_group_col: str | None = "codec_family",
+        vx_out_png: str | None = None,
+        vx_add_ref_tick: bool = True,
+    ):
+        """
+        x: codec/preset（VMAF降順に並べる）
+        左軸: vx_y_left_col（折れ線）
+        右軸: vx_y_right_col（散布図。vx_right_group_col で系列分け可）
+        """
+        vx_df = vx_df_in.copy()
+        vx_df = vx_df.dropna(subset=[vx_x_label_col, vx_y_left_col, vx_y_right_col])
+        vx_df = vx_df.sort_values(vx_y_left_col, ascending=False)  # VMAF順（降順）
+
+        vx_labels = vx_df[vx_x_label_col].astype(str).tolist()
+        if vx_add_ref_tick:
+            vx_labels = ["ref"] + vx_labels
+
+        vx_x = np.arange(len(vx_labels))
+
+        vx_fig, vx_ax1 = plt.subplots(figsize=(12.5, 6.2))
+        vx_ax2 = vx_ax1.twinx()
+
+        # 左軸
+        if vx_add_ref_tick:
+            vx_y1 = np.concatenate([[100.0], vx_df[vx_y_left_col].to_numpy()])
+        else:
+            vx_y1 = vx_df[vx_y_left_col].to_numpy()
+        vx_ax1.plot(vx_x, vx_y1, marker="o", linestyle="-", label=vx_y_left_col)
+
+        # 右軸
+        if vx_right_group_col and vx_right_group_col in vx_df.columns:
+            vx_groups = list(pd.unique(vx_df[vx_right_group_col].dropna()))
+            vx_pos_map = {
+                idx: i + (1 if vx_add_ref_tick else 0)
+                for i, idx in enumerate(vx_df.index)
+            }
+            for vx_g in vx_groups:
+                vx_dg = vx_df[vx_df[vx_right_group_col] == vx_g]
+                vx_xx = np.array([vx_pos_map[i] for i in vx_dg.index])
+                vx_yy = vx_dg[vx_y_right_col].to_numpy()
+                vx_ax2.scatter(
+                    vx_xx, vx_yy, label=f"{vx_y_right_col} ({vx_g})", marker="v"
+                )
+        else:
+            if vx_add_ref_tick:
+                vx_y2 = np.concatenate([[1.0], vx_df[vx_y_right_col].to_numpy()])
+            else:
+                vx_y2 = vx_df[vx_y_right_col].to_numpy()
+            vx_ax2.scatter(vx_x, vx_y2, label=vx_y_right_col, marker="v")
+
+        vx_ax1.set_title(vx_title)
+        vx_ax1.set_xlabel("codec/preset (sorted by VMAF desc)")
+        vx_ax1.set_ylabel(vx_left_ylabel)
+        vx_ax2.set_ylabel(vx_right_ylabel)
+
+        vx_ax1.set_xticks(vx_x)
+        vx_ax1.set_xticklabels(vx_labels, rotation=30, ha="right")
+        vx_ax1.grid(True, which="both", axis="both")
+
+        vx_h1, vx_l1 = vx_ax1.get_legend_handles_labels()
+        vx_h2, vx_l2 = vx_ax2.get_legend_handles_labels()
+        vx_ax1.legend(vx_h1 + vx_h2, vx_l1 + vx_l2, loc="best", frameon=True)
+
+        vx_fig.tight_layout()
+        if vx_out_png:
+            vx_fig.savefig(vx_out_png, dpi=150)
+        return vx_fig
+
+    # -----------------------------
+    # main（衝突回避版）
+    # 既存の plot_df / _prep_plot_df / INPUT_TYPE / SAVE / OUTDIR はそのまま使う
+    # -----------------------------
+    vx_plot_df = _prep_plot_df(df)
+    vx_plot_df = vx_add_combo_label_and_metrics(vx_plot_df)
+
+    # 1つめ: x=codec/preset, 左=VMAF, 右=圧縮率
+    vx_fig_a = vx_plot_dual_axis_sorted_by_vmaf(
+        vx_df_in=vx_plot_df,
+        vx_x_label_col="vx_combo_label",
+        vx_y_left_col="vmaf_mean",
+        vx_y_right_col="size_ratio_out_over_src",
+        vx_title=f"VMAF vs Size ratio (sorted by VMAF) input_type={INPUT_TYPE}",
+        vx_left_ylabel="VMAF mean",
+        vx_right_ylabel="size_ratio (out/src)",
+        vx_right_group_col="codec_family",
+        vx_out_png=f"{OUTDIR}/plot_{INPUT_TYPE}_vmaf_size_sorted.png" if SAVE else None,
+        vx_add_ref_tick=True,
+    )
+
+    # 2つめ: x=codec/preset（VMAF順固定）, 左=時間比, 右=CPU負荷
+    vx_df2 = vx_plot_df.dropna(
+        subset=[
+            "vmaf_mean",
+            "vx_enc_time_over_duration",
+            "vx_cpu_load_cores_avg",
+            "vx_combo_label",
+            "codec_family",
+        ]
+    ).copy()
+    vx_df2 = vx_df2.sort_values("vmaf_mean", ascending=False)
+
+    vx_ordered_labels = ["ref"] + vx_df2["vx_combo_label"].astype(str).tolist()
+    vx_x2 = np.arange(len(vx_ordered_labels))
+
+    vx_fig_b, vx_ax1_b = plt.subplots(figsize=(12.5, 6.2))
+    vx_ax2_b = vx_ax1_b.twinx()
+
+    # 左軸: 圧縮速度（時間比）
+    vx_y_speed = np.concatenate(
+        [[np.nan], vx_df2["vx_enc_time_over_duration"].to_numpy()]
+    )
+    vx_ax1_b.plot(
+        vx_x2, vx_y_speed, marker="o", linestyle="-", label="vx_enc_time_over_duration"
+    )
+
+    # 右軸: CPU負荷（平均使用コア数）を codec_family で系列分け
+    vx_pos_map2 = {idx: i + 1 for i, idx in enumerate(vx_df2.index)}  # +1 は ref 分
+    for vx_fam in pd.unique(vx_df2["codec_family"].dropna()):
+        vx_dd = vx_df2[vx_df2["codec_family"] == vx_fam]
+        vx_xx = np.array([vx_pos_map2[i] for i in vx_dd.index])
+        vx_yy = vx_dd["vx_cpu_load_cores_avg"].to_numpy()
+        vx_ax2_b.scatter(
+            vx_xx, vx_yy, label=f"vx_cpu_load_cores_avg ({vx_fam})", marker="D"
+        )
+
+    vx_ax1_b.set_title(
+        f"Encode time ratio vs CPU load (x sorted by VMAF) input_type={INPUT_TYPE}"
+    )
+    vx_ax1_b.set_xlabel("codec/preset (sorted by VMAF desc)")
+    vx_ax1_b.set_ylabel(
+        "enc_time_over_duration = real_time_s / src_duration_s (lower is faster)"
+    )
+    vx_ax2_b.set_ylabel("cpu_load_cores_avg = cpu_total_s / real_time_s (avg cores)")
+
+    vx_ax1_b.set_xticks(vx_x2)
+    vx_ax1_b.set_xticklabels(vx_ordered_labels, rotation=30, ha="right")
+    vx_ax1_b.grid(True, which="both", axis="both")
+
+    vx_h1_b, vx_l1_b = vx_ax1_b.get_legend_handles_labels()
+    vx_h2_b, vx_l2_b = vx_ax2_b.get_legend_handles_labels()
+    vx_ax1_b.legend(vx_h1_b + vx_h2_b, vx_l1_b + vx_l2_b, loc="best", frameon=True)
+
+    vx_fig_b.tight_layout()
+    if SAVE:
+        vx_fig_b.savefig(f"{OUTDIR}/plot_{INPUT_TYPE}_time_cpu_sorted.png", dpi=150)
+
+    plt.show()
+
+    if SAVE:
+        print("saved:")
+        print(f"- {OUTDIR}/plot_{INPUT_TYPE}_vmaf_size_sorted.png")
+        print(f"- {OUTDIR}/plot_{INPUT_TYPE}_time_cpu_sorted.png")
     return
 
 
