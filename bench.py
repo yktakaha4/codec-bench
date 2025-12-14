@@ -7,6 +7,7 @@ app = marimo.App()
 @app.cell
 def _():
     from subprocess import run
+
     run("rm -rf out/ && mkdir -p out/", shell=True, check=True)
     return (run,)
 
@@ -22,19 +23,17 @@ def _(run):
         # ref: https://code.videolan.org/videolan/x264/-/blob/master/x264.h#L704
         # 小さい方が早いが品質が落ちる
         ("libx264", "compat", "1"),
-        ("libx264", "compat", "3"), 
-        ("libx264", "compat", "5"), # default
+        ("libx264", "compat", "3"),
+        ("libx264", "compat", "5"),  # default
         ("libx264", "compat", "7"),
         ("libx264", "compat", "9"),
-
         # ref: https://x265.readthedocs.io/en/stable/presets.html
         # 小さい方が早いが品質が落ちる
         ("libx265", "compat", "1"),
         ("libx265", "compat", "3"),
-        ("libx265", "compat", "5"), # default
+        ("libx265", "compat", "5"),  # default
         ("libx265", "compat", "7"),
         ("libx265", "compat", "9"),
-
         # ref: https://gitlab.com/AOMediaCodec/SVT-AV1/-/blob/master/Docs/CommonQuestions.md#what-presets-do
         # 小さい方が高品質/高圧縮だがエンコードに時間がかかる
         # Generally speaking, presets 1-3 represent extremely high efficiency, for use when encode time is not important and quality/size of the resulting video file is critical.
@@ -42,7 +41,7 @@ def _(run):
         # Presets between 7 and 13 are used for fast and real-time encoding. One should use the lowest preset that is tolerable.
         ("libsvtav1", "compat", "4"),
         ("libsvtav1", "compat", "6"),
-        ("libsvtav1", "compat", "8"), # default
+        ("libsvtav1", "compat", "8"),  # default
         ("libsvtav1", "compat", "10"),
         ("libsvtav1", "compat", "12"),
     ]
@@ -50,22 +49,34 @@ def _(run):
         print(f"convert: {codec=} {input_type=} {preset=}")
         out_prefix = f"out/{codec}_{input_type}_preset{preset}"
 
-        run(f"""
+        run(
+            f"""
         {time_command} {ffmpeg_command} -y -i movies/{input_type}.mov \
             -vf "{video_filter}" \
             -c:v {codec} -preset {preset} \
             -an \
-            {out_prefix}.mp4 > {out_prefix}_ffmpeg.log 2>&1""", shell=True, check=True)
+            {out_prefix}.mp4 > {out_prefix}_ffmpeg.log 2>&1""",
+            shell=True,
+            check=True,
+        )
 
-        run(f"""
+        run(
+            f"""
         {ffprobe_command} {out_prefix}.mp4 > {out_prefix}_ffprobe.txt 2>&1
-        """, shell=True, check=True)
+        """,
+            shell=True,
+            check=True,
+        )
 
-        run(f"""
+        run(
+            f"""
         {ffmpeg_command} -i {out_prefix}.mp4 -i movies/{input_type}.mov \
             -lavfi "[0:v]{video_filter}[dist];[1:v]{video_filter}[ref];[dist][ref]libvmaf=log_fmt=json:log_path={out_prefix}_vmaf.json" \
             -f null - > {out_prefix}_vmaf.txt 2>&1
-        """, shell=True, check=True)
+        """,
+            shell=True,
+            check=True,
+        )
     return
 
 
@@ -79,7 +90,6 @@ def _():
 
     import pandas as pd
 
-
     # ========== 設定 ==========
     OUT_DIR = Path("out")
     MOVIES_DIR = Path("movies")
@@ -87,7 +97,6 @@ def _():
     # 入力動画（元動画）のファイル名規約: movies/{input_type}.mov
     # 例: movies/compat.mov
     INPUT_SUFFIX = ".mov"
-
 
     # ========== パース系ユーティリティ ==========
     _TIME_RE = re.compile(
@@ -99,12 +108,12 @@ def _():
         r"^(?P<codec>[^_]+)_(?P<input_type>[^_]+)_preset(?P<preset>\d+)$"
     )
 
-
     def _read_text(path: Path) -> str:
         return path.read_text(encoding="utf-8", errors="replace")
 
-
-    def parse_time_real_user_sys(ffmpeg_log_path: Path) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    def parse_time_real_user_sys(
+        ffmpeg_log_path: Path,
+    ) -> tuple[Optional[float], Optional[float], Optional[float]]:
         """
         /usr/bin/time -l の末尾行にある:
           13.26 real        75.17 user         1.24 sys
@@ -112,12 +121,13 @@ def _():
         """
         text = _read_text(ffmpeg_log_path)
         # 末尾に近いほど確度が高いので後ろから走査
-        for line in reversed(text.splitlines()[-200:]):  # 末尾200行だけ見れば十分なことが多い
+        for line in reversed(
+            text.splitlines()[-200:]
+        ):  # 末尾200行だけ見れば十分なことが多い
             m = _TIME_RE.match(line)
             if m:
                 return float(m["real"]), float(m["user"]), float(m["sys"])
         return None, None, None
-
 
     def extract_vmaf_mean(vmaf_json_path: Path) -> Optional[float]:
         """
@@ -166,23 +176,25 @@ def _():
             return None
         return sum(values) / len(values)
 
-
     def file_size_bytes(path: Path) -> Optional[int]:
         try:
             return path.stat().st_size
         except FileNotFoundError:
             return None
 
-
     # ========== 収集本体 ==========
-    def collect_codec_benchmark_rows(out_dir: Path = OUT_DIR, movies_dir: Path = MOVIES_DIR) -> pd.DataFrame:
+    def collect_codec_benchmark_rows(
+        out_dir: Path = OUT_DIR, movies_dir: Path = MOVIES_DIR
+    ) -> pd.DataFrame:
         """
         out_dir を走査し、*_ffmpeg.log を起点に 1ケース=1行のDFを作る。
         """
         rows: list[dict[str, Any]] = []
 
         for ffmpeg_log in sorted(out_dir.glob("*_ffmpeg.log")):
-            stem = ffmpeg_log.name.removesuffix("_ffmpeg.log")  # 例: libsvtav1_compat_preset4
+            stem = ffmpeg_log.name.removesuffix(
+                "_ffmpeg.log"
+            )  # 例: libsvtav1_compat_preset4
             m = _PREFIX_RE.match(stem)
             if not m:
                 # 規約外はスキップ
@@ -206,17 +218,21 @@ def _():
             size_ratio = (out_size / src_size) if (src_size and out_size) else None
 
             # VMAF mean
-            vmaf_mean = extract_vmaf_mean(vmaf_json_path) if vmaf_json_path.exists() else None
+            vmaf_mean = (
+                extract_vmaf_mean(vmaf_json_path) if vmaf_json_path.exists() else None
+            )
 
             # 時間: real, user, sys（CPU合計は user+sys）
             real_s, user_s, sys_s = parse_time_real_user_sys(ffmpeg_log)
-            cpu_total_s = (user_s + sys_s) if (user_s is not None and sys_s is not None) else None
+            cpu_total_s = (
+                (user_s + sys_s) if (user_s is not None and sys_s is not None) else None
+            )
 
             rows.append(
                 {
-                    "codec": codec,                 # libx264 / libx265 / libsvtav1 ...
-                    "input_type": input_type,       # compat ...
-                    "preset": preset,               # 1,3,5...
+                    "codec": codec,  # libx264 / libx265 / libsvtav1 ...
+                    "input_type": input_type,  # compat ...
+                    "preset": preset,  # 1,3,5...
                     "src_path": str(src_path),
                     "out_path": str(mp4_path),
                     "src_size_bytes": src_size,
@@ -228,7 +244,9 @@ def _():
                     "cpu_sys_s": sys_s,
                     "cpu_total_s": cpu_total_s,
                     "ffmpeg_log_path": str(ffmpeg_log),
-                    "vmaf_json_path": str(vmaf_json_path) if vmaf_json_path.exists() else None,
+                    "vmaf_json_path": (
+                        str(vmaf_json_path) if vmaf_json_path.exists() else None
+                    ),
                 }
             )
 
@@ -237,12 +255,21 @@ def _():
         # 便利列（可視化しやすいように）
         if not df.empty:
             df["codec_family"] = df["codec"].map(
-                lambda x: "h264" if x == "libx264" else ("h265" if x == "libx265" else ("av1" if x in {"libsvtav1", "libaom-av1"} else "other"))
+                lambda x: (
+                    "h264"
+                    if x == "libx264"
+                    else (
+                        "h265"
+                        if x == "libx265"
+                        else ("av1" if x in {"libsvtav1", "libaom-av1"} else "other")
+                    )
+                )
             )
-            df = df.sort_values(["codec_family", "codec", "input_type", "preset"]).reset_index(drop=True)
+            df = df.sort_values(
+                ["codec_family", "codec", "input_type", "preset"]
+            ).reset_index(drop=True)
 
         return df
-
 
     # ========== 実行 ==========
     df = collect_codec_benchmark_rows()
@@ -253,8 +280,8 @@ def _():
 
 @app.cell
 def _(df, pd):
-    import numpy as np
     import matplotlib.pyplot as plt
+    import numpy as np
 
     # =========================================================
     # Plot from pandas DataFrame `df`
@@ -263,9 +290,8 @@ def _(df, pd):
     # - Annotate each point with original preset value
     # - ASCII only (no Japanese)
     # =========================================================
-
     # ---- user knobs ----
-    INPUT_TYPE = "compat"   # set None to include all input_type
+    INPUT_TYPE = "compat"  # set None to include all input_type
     SAVE = True
     OUTDIR = "out"
 
@@ -278,14 +304,12 @@ def _(df, pd):
 
     TARGET_CODECS = ["libx264", "libx265", "libsvtav1"]
 
-
     # ---- helpers ----
     def _ensure_numeric(d: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
         d = d.copy()
         for c in cols:
             d[c] = pd.to_numeric(d[c], errors="coerce")
         return d
-
 
     def _normalize_speed_rank(codec: str, presets_sorted: list[int]) -> dict[int, int]:
         """
@@ -300,8 +324,9 @@ def _(df, pd):
             order = sorted(presets_sorted, reverse=True)  # slow .. fast
             return {p: i + 1 for i, p in enumerate(order)}
 
-
-    def _build_speed_labels_for_codec(codec: str, codec_df: pd.DataFrame) -> pd.DataFrame:
+    def _build_speed_labels_for_codec(
+        codec: str, codec_df: pd.DataFrame
+    ) -> pd.DataFrame:
         d = codec_df.copy()
         presets = sorted(pd.unique(d["preset"].dropna()).tolist())
         if not presets:
@@ -337,7 +362,6 @@ def _(df, pd):
         d["speed_pos"] = d["speed_label_cat"].cat.codes.astype(float)
         return d
 
-
     def _prep_plot_df(df: pd.DataFrame) -> pd.DataFrame:
         d = df.copy()
 
@@ -348,7 +372,13 @@ def _(df, pd):
 
         d = _ensure_numeric(
             d,
-            ["preset", "size_ratio_out_over_src", "vmaf_mean", "real_time_s", "cpu_total_s"],
+            [
+                "preset",
+                "size_ratio_out_over_src",
+                "vmaf_mean",
+                "real_time_s",
+                "cpu_total_s",
+            ],
         )
 
         d = d.dropna(subset=["codec", "preset"])
@@ -360,7 +390,6 @@ def _(df, pd):
         d2 = pd.concat(parts, ignore_index=True)
         d2 = d2.dropna(subset=["speed_label", "speed_pos"])
         return d2
-
 
     def _plot_dual_axis_by_impl(
         data: pd.DataFrame,
@@ -445,7 +474,6 @@ def _(df, pd):
         if out_png:
             fig.savefig(out_png, dpi=150)
         return fig
-
 
     # ---- main ----
     plot_df = _prep_plot_df(df)
