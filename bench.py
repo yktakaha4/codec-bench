@@ -21,32 +21,33 @@ def _(run):
     ffmpeg_command = "ffmpeg"
     ffprobe_command = "ffprobe"
     video_filter = "scale=720:1280:flags=lanczos,format=yuv420p"
+    input_type = "compat"
 
     cases = [
         # ref: https://code.videolan.org/videolan/x264/-/blob/master/x264.h#L704
         # 小さい方が早いが品質が落ちる
-        ("libx264", "compat", "1"),
-        ("libx264", "compat", "3"),
-        ("libx264", "compat", "5"),  # default
-        ("libx264", "compat", "7"),
-        ("libx264", "compat", "9"),
+        ("libx264", input_type, "1"),
+        ("libx264", input_type, "3"),
+        ("libx264", input_type, "5"),  # default
+        ("libx264", input_type, "7"),
+        ("libx264", input_type, "9"),
         # ref: https://x265.readthedocs.io/en/stable/presets.html
         # 小さい方が早いが品質が落ちる
-        ("libx265", "compat", "1"),
-        ("libx265", "compat", "3"),
-        ("libx265", "compat", "5"),  # default
-        ("libx265", "compat", "7"),
-        ("libx265", "compat", "9"),
+        ("libx265", input_type, "1"),
+        ("libx265", input_type, "3"),
+        ("libx265", input_type, "5"),  # default
+        ("libx265", input_type, "7"),
+        ("libx265", input_type, "9"),
         # ref: https://gitlab.com/AOMediaCodec/SVT-AV1/-/blob/master/Docs/CommonQuestions.md#what-presets-do
         # 小さい方が高品質/高圧縮だがエンコードに時間がかかる
         # Generally speaking, presets 1-3 represent extremely high efficiency, for use when encode time is not important and quality/size of the resulting video file is critical.
         # Presets 4-6 are commonly used by home enthusiasts as they represent a balance of efficiency and reasonable compute time.
         # Presets between 7 and 13 are used for fast and real-time encoding. One should use the lowest preset that is tolerable.
-        ("libsvtav1", "compat", "4"),
-        ("libsvtav1", "compat", "6"),
-        ("libsvtav1", "compat", "8"),  # default
-        ("libsvtav1", "compat", "10"),
-        ("libsvtav1", "compat", "12"),
+        ("libsvtav1", input_type, "4"),
+        ("libsvtav1", input_type, "6"),
+        ("libsvtav1", input_type, "8"),  # default
+        ("libsvtav1", input_type, "10"),
+        ("libsvtav1", input_type, "12"),
     ]
     for codec, input_type, preset in cases:
         print(f"convert: {codec=} {input_type=} {preset=}")
@@ -524,8 +525,8 @@ def _(df, pd):
 
     if SAVE:
         print("saved:")
-        print(f"- {OUTDIR}/plot_efficiency_vmaf_by_impl.png")
-        print(f"- {OUTDIR}/plot_time_cpu_by_impl.png")
+        print(f"- {OUTDIR}/plot_{INPUT_TYPE}_efficiency_vmaf_by_impl.png")
+        print(f"- {OUTDIR}/plot_{INPUT_TYPE}_time_cpu_by_impl.png")
     return
 
 
