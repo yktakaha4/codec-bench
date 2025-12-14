@@ -8,7 +8,7 @@ app = marimo.App()
 def _():
     from subprocess import run
 
-    reset = True
+    reset = False
 
     if reset:
         run("rm -rf out/ && mkdir -p out/", shell=True, check=True)
@@ -21,7 +21,7 @@ def _(run):
     ffmpeg_command = "ffmpeg"
     ffprobe_command = "ffprobe"
     video_filter = "scale=720:1280:flags=lanczos,format=yuv420p"
-    input_type = "compat"
+    input_type = "compat_duck"
 
     cases = [
         # ref: https://code.videolan.org/videolan/x264/-/blob/master/x264.h#L704
@@ -507,7 +507,7 @@ def _(df, pd):
         title=f"Efficiency vs VMAF (by encoder impl) input_type={INPUT_TYPE}",
         left_ylabel="size_ratio (out/src)",
         right_ylabel="VMAF mean",
-        out_png=f"{OUTDIR}/plot_efficiency_vmaf_by_impl.png" if SAVE else None,
+        out_png=f"{OUTDIR}/plot_{INPUT_TYPE}_efficiency_vmaf_by_impl.png" if SAVE else None,
     )
 
     # 2) Real time vs CPU total
@@ -518,7 +518,7 @@ def _(df, pd):
         title=f"Speed vs CPU time (by encoder impl) input_type={INPUT_TYPE}",
         left_ylabel="speed (x realtime) = src_duration_s / real_time_s",
         right_ylabel="cpu_total_s (user+sys)",
-        out_png=f"{OUTDIR}/plot_time_cpu_by_impl.png" if SAVE else None,
+        out_png=f"{OUTDIR}/plot_{INPUT_TYPE}_time_cpu_by_impl.png" if SAVE else None,
     )
 
     plt.show()
