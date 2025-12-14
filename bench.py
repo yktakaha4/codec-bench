@@ -8,7 +8,10 @@ app = marimo.App()
 def _():
     from subprocess import run
 
-    run("rm -rf out/ && mkdir -p out/", shell=True, check=True)
+    reset = True
+
+    if reset:
+        run("rm -rf out/ && mkdir -p out/", shell=True, check=True)
     return (run,)
 
 
@@ -84,6 +87,7 @@ def _(run):
 def _():
     import json
     import re
+    import subprocess
     from dataclasses import dataclass
     from pathlib import Path
     from typing import Any, Optional
@@ -94,8 +98,6 @@ def _():
     OUT_DIR = Path("out")
     MOVIES_DIR = Path("movies")
 
-    # 入力動画（元動画）のファイル名規約: movies/{input_type}.mov
-    # 例: movies/compat.mov
     INPUT_SUFFIX = ".mov"
 
     # ========== パース系ユーティリティ ==========
@@ -103,7 +105,6 @@ def _():
         r"^\s*(?P<real>[\d.]+)\s+real\s+(?P<user>[\d.]+)\s+user\s+(?P<sys>[\d.]+)\s+sys\s*$"
     )
 
-    # out/{codec}_{input_type}_preset{preset}(_ffmpeg.log|.mp4|_vmaf.json)
     _PREFIX_RE = re.compile(
         r"^(?P<codec>[^_]+)_(?P<input_type>[^_]+)_preset(?P<preset>\d+)$"
     )
@@ -114,27 +115,14 @@ def _():
     def parse_time_real_user_sys(
         ffmpeg_log_path: Path,
     ) -> tuple[Optional[float], Optional[float], Optional[float]]:
-        """
-        /usr/bin/time -l の末尾行にある:
-          13.26 real        75.17 user         1.24 sys
-        を拾う。見つからなければ None。
-        """
         text = _read_text(ffmpeg_log_path)
-        # 末尾に近いほど確度が高いので後ろから走査
-        for line in reversed(
-            text.splitlines()[-200:]
-        ):  # 末尾200行だけ見れば十分なことが多い
+        for line in reversed(text.splitlines()[-200:]):
             m = _TIME_RE.match(line)
             if m:
                 return float(m["real"]), float(m["user"]), float(m["sys"])
         return None, None, None
 
     def extract_vmaf_mean(vmaf_json_path: Path) -> Optional[float]:
-        """
-        libvmafのjsonログから vmaf の平均を返す。
-        典型: frames[].metrics.vmaf
-        環境差でキー名が微妙に違う可能性があるので、metrics内の vmaf系キーを探索する。
-        """
         try:
             data = json.loads(vmaf_json_path.read_text(encoding="utf-8"))
         except Exception:
@@ -144,7 +132,6 @@ def _():
         if not isinstance(frames, list) or not frames:
             return None
 
-        # まずは代表的なキーを優先して探す
         preferred_keys = ["vmaf", "vmaf_v0.6.1", "vmaf_v0.6.1neg", "vmaf_v0.6.1_nneg"]
 
         values: list[float] = []
@@ -159,12 +146,10 @@ def _():
                     key = k
                     break
             if key is None:
-                # fallback: metricsの中で "vmaf" を含むキーを探す
                 for k in metrics.keys():
                     if isinstance(k, str) and "vmaf" in k.lower():
                         key = k
                         break
-
             if key is None:
                 continue
 
@@ -182,22 +167,47 @@ def _():
         except FileNotFoundError:
             return None
 
+    def get_duration_seconds_ffprobe(path: Path) -> Optional[float]:
+        """
+        Return media duration in seconds using ffprobe.
+        Requires ffprobe in PATH (typically bundled with ffmpeg).
+        """
+        if not path.exists():
+            return None
+        cmd = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ]
+        try:
+            out = subprocess.check_output(
+                cmd, stderr=subprocess.STDOUT, text=True
+            ).strip()
+            if not out:
+                return None
+            v = float(out)
+            return v if v > 0 else None
+        except Exception:
+            return None
+
     # ========== 収集本体 ==========
     def collect_codec_benchmark_rows(
         out_dir: Path = OUT_DIR, movies_dir: Path = MOVIES_DIR
     ) -> pd.DataFrame:
-        """
-        out_dir を走査し、*_ffmpeg.log を起点に 1ケース=1行のDFを作る。
-        """
         rows: list[dict[str, Any]] = []
 
+        # Cache duration per src_path to avoid calling ffprobe repeatedly
+        src_duration_cache: dict[str, Optional[float]] = {}
+
         for ffmpeg_log in sorted(out_dir.glob("*_ffmpeg.log")):
-            stem = ffmpeg_log.name.removesuffix(
-                "_ffmpeg.log"
-            )  # 例: libsvtav1_compat_preset4
+            stem = ffmpeg_log.name.removesuffix("_ffmpeg.log")
             m = _PREFIX_RE.match(stem)
             if not m:
-                # 規約外はスキップ
                 continue
 
             codec = m["codec"]
@@ -213,33 +223,44 @@ def _():
 
             src_size = file_size_bytes(src_path)
             out_size = file_size_bytes(mp4_path)
-
-            # 圧縮効率: out/src（小さいほど良い）
             size_ratio = (out_size / src_size) if (src_size and out_size) else None
 
-            # VMAF mean
+            # duration
+            src_key = str(src_path)
+            if src_key not in src_duration_cache:
+                src_duration_cache[src_key] = get_duration_seconds_ffprobe(src_path)
+            src_duration_s = src_duration_cache[src_key]
+
             vmaf_mean = (
                 extract_vmaf_mean(vmaf_json_path) if vmaf_json_path.exists() else None
             )
 
-            # 時間: real, user, sys（CPU合計は user+sys）
             real_s, user_s, sys_s = parse_time_real_user_sys(ffmpeg_log)
             cpu_total_s = (
                 (user_s + sys_s) if (user_s is not None and sys_s is not None) else None
             )
 
+            # speed: duration / wall time  (x realtime)
+            speed = (
+                (src_duration_s / real_s)
+                if (src_duration_s and real_s and real_s > 0)
+                else None
+            )
+
             rows.append(
                 {
-                    "codec": codec,  # libx264 / libx265 / libsvtav1 ...
-                    "input_type": input_type,  # compat ...
-                    "preset": preset,  # 1,3,5...
+                    "codec": codec,
+                    "input_type": input_type,
+                    "preset": preset,
                     "src_path": str(src_path),
                     "out_path": str(mp4_path),
                     "src_size_bytes": src_size,
                     "out_size_bytes": out_size,
                     "size_ratio_out_over_src": size_ratio,
+                    "src_duration_s": src_duration_s,
                     "vmaf_mean": vmaf_mean,
                     "real_time_s": real_s,
+                    "speed": speed,
                     "cpu_user_s": user_s,
                     "cpu_sys_s": sys_s,
                     "cpu_total_s": cpu_total_s,
@@ -252,7 +273,6 @@ def _():
 
         df = pd.DataFrame(rows)
 
-        # 便利列（可視化しやすいように）
         if not df.empty:
             df["codec_family"] = df["codec"].map(
                 lambda x: (
@@ -273,8 +293,8 @@ def _():
 
     # ========== 実行 ==========
     df = collect_codec_benchmark_rows()
-    df
     df.to_csv(OUT_DIR / "codec_benchmark_summary.tsv", sep="\t", index=False)
+    df
     return df, pd
 
 
@@ -491,11 +511,11 @@ def _(df, pd):
 
     # 2) Real time vs CPU total
     fig2 = _plot_dual_axis_by_impl(
-        data=plot_df.dropna(subset=["real_time_s", "cpu_total_s"]),
-        y_left_col="real_time_s",
+        data=plot_df.dropna(subset=["speed", "cpu_total_s"]),
+        y_left_col="speed",
         y_right_col="cpu_total_s",
-        title=f"Wall time vs CPU time (by encoder impl) input_type={INPUT_TYPE}",
-        left_ylabel="real_time_s",
+        title=f"Speed vs CPU time (by encoder impl) input_type={INPUT_TYPE}",
+        left_ylabel="speed (x realtime) = src_duration_s / real_time_s",
         right_ylabel="cpu_total_s (user+sys)",
         out_png=f"{OUTDIR}/plot_time_cpu_by_impl.png" if SAVE else None,
     )
